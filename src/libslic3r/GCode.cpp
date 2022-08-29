@@ -1999,7 +1999,7 @@ void GCode::process_layers(
             CNumericLocalesSetter locales_setter;
             if (layer_to_print_idx == layers_to_print.size()) {
                 fc.stop();
-                return {};
+                return GCode::LayerResult{};
             } else {
                 const std::pair<coordf_t, std::vector<LayerToPrint>>& layer = layers_to_print[layer_to_print_idx++];
                 const LayerTools& layer_tools = tool_ordering.tools_for_layer(layer.first);
@@ -2013,7 +2013,7 @@ void GCode::process_layers(
         [&spiral_vase = *this->m_spiral_vase.get()](GCode::LayerResult in) -> GCode::LayerResult {
             CNumericLocalesSetter locales_setter;
             spiral_vase.enable(in.spiral_vase_enable);
-            return { spiral_vase.process_layer(std::move(in.gcode)), in.layer_id, in.spiral_vase_enable, in.cooling_buffer_flush };
+            return GCode::LayerResult{ spiral_vase.process_layer(std::move(in.gcode)), in.layer_id, in.spiral_vase_enable, in.cooling_buffer_flush };
         });
     const auto cooling = tbb::make_filter<GCode::LayerResult, std::string>(slic3r_tbb_filtermode::serial_in_order,
         [&cooling_buffer = *this->m_cooling_buffer.get()](GCode::LayerResult in) -> std::string {
@@ -2140,6 +2140,9 @@ void GCode::process_layers(
 
 std::string GCode::placeholder_parser_process(const std::string &name, const std::string &templ, uint16_t current_extruder_id, const DynamicConfig *config_override)
 {
+    if (current_extruder_id == uint16_t(-1)) {
+        current_extruder_id = this->m_writer.tool()->id();
+    }
     DynamicConfig default_config;
     if (config_override != nullptr)
         default_config = *config_override;
@@ -2694,6 +2697,10 @@ GCode::LayerResult GCode::process_layer(
                 }
         }
         result.spiral_vase_enable = enable;
+        if (enable)
+            m_spiral_vase_layer = std::abs(m_spiral_vase_layer) + 1;
+        else
+            m_spiral_vase_layer = -std::abs(m_spiral_vase_layer);
         // If we're going to apply spiralvase to this layer, disable loop clipping.
         m_enable_loop_clipping = !enable;
     }
@@ -3663,7 +3670,7 @@ void GCode::split_at_seam_pos(ExtrusionLoop& loop, std::unique_ptr<EdgeGrid::Gri
     // or randomize if requested
     Point last_pos = this->last_pos();
     //for first spiral, choose the seam, as the position will be very relevant.
-    if (m_config.spiral_vase && !m_spiral_vase->is_transition_layer()) {
+    if (m_spiral_vase_layer > 1 /* spiral vase is printign and it's after the transition layer (that one can find a good spot)*/) {
             loop.split_at(last_pos, false);
     /*} else {
         const EdgeGrid::Grid* edge_grid_ptr = (lower_layer_edge_grid && *lower_layer_edge_grid)
@@ -3679,12 +3686,13 @@ void GCode::split_at_seam_pos(ExtrusionLoop& loop, std::unique_ptr<EdgeGrid::Gri
         if (!loop.split_at_vertex(seam))
             // The point is not in the original loop. Insert it.
             loop.split_at(seam, true);*/
-    } else
-        m_seam_placer.place_seam(loop,
+    } else {
+        m_seam_placer.place_seam(loop, *this->layer(),
             this->last_pos(), m_config.external_perimeters_first,
             EXTRUDER_CONFIG_WITH_DEFAULT(nozzle_diameter, 0.4),
             m_print_object_instance_id,
             lower_layer_edge_grid ? lower_layer_edge_grid->get() : nullptr);
+    }
 }
 
 namespace check_wipe {
@@ -3809,7 +3817,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop &original_loop, const std::s
     // clip the path to avoid the extruder to get exactly on the first point of the loop;
     // if polyline was shorter than the clipping distance we'd get a null polyline, so
     // we discard it in that case
-    ExtrusionPaths& paths = loop_to_seam.paths;
+    ExtrusionPaths& building_paths = loop_to_seam.paths;
     if (m_enable_loop_clipping && m_writer.tool_is_extruder()) {
         coordf_t clip_length = scale_(m_config.seam_gap.get_abs_value(m_writer.tool()->id(), EXTRUDER_CONFIG_WITH_DEFAULT(nozzle_diameter, 0)));
         coordf_t min_clip_length = scale_(EXTRUDER_CONFIG_WITH_DEFAULT(nozzle_diameter, 0)) * 0.15;
@@ -3818,19 +3826,20 @@ std::string GCode::extrude_loop(const ExtrusionLoop &original_loop, const std::s
         ExtrusionPaths clipped;
         if (clip_length > min_clip_length) {
                 // remove clip_length, like normally, but keep the removed part
-            clipped = clip_end(paths, clip_length);
+            clipped = clip_end(building_paths, clip_length);
                 // remove min_clip_length from the removed paths
             clip_end(clipped, min_clip_length);
                 // ensure that the removed paths are travels
             for (ExtrusionPath& ep : clipped)
                 ep.mm3_per_mm = 0;
                 // re-add removed paths as travels.
-            append(paths, clipped);
+            append(building_paths, clipped);
         } else {
-            clip_end(paths, clip_length);
+            clip_end(building_paths, clip_length);
         }
     }
-    if (paths.empty()) return "";
+    if (building_paths.empty()) return "";
+    const ExtrusionPaths& paths = building_paths;
 
     // apply the small perimeter speed
     if (speed == -1 && is_perimeter(paths.front().role()) && paths.front().role() != erThinWall) {
@@ -3909,7 +3918,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop &original_loop, const std::s
     
     // extrude along the path
     //FIXME: we can have one-point paths in the loop that don't move : it's useless! and can create problems!
-    for (ExtrusionPaths::iterator path = paths.begin(); path != paths.end(); ++path) {
+    for (auto path = paths.begin(); path != paths.end(); ++path) {
         if(path->polyline.points.size()>1)
             gcode += extrude_path(*path, description, speed);
     }
@@ -3941,7 +3950,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop &original_loop, const std::s
             ExtrusionPaths paths_wipe;
             m_wipe.reset_path();
             for (int i = 0; i < paths.size(); i++) {
-                ExtrusionPath& path = paths[i];
+                const ExtrusionPath& path = paths[i];
                 if (wipe_dist > 0) {
                     //first, we use the polyline for wipe_extra_perimeter
                     if (path.length() < wipe_dist) {
@@ -4032,7 +4041,7 @@ std::string GCode::extrude_loop(const ExtrusionLoop &original_loop, const std::s
             current_pos = pt_inside.cast<double>();
             //go to the inside (use clipper for easy shift)
             Polygon original_polygon = original_loop.polygon();
-            Polygons polys = offset(original_polygon, (original_polygon.is_clockwise()?1:-1) * dist);
+            Polygons polys = offset(original_polygon, -dist);
             //find nearest point
             size_t best_poly_idx = 0;
             size_t best_pt_idx = 0;
@@ -5401,10 +5410,13 @@ std::string GCode::toolchange(uint16_t extruder_id, double print_z) {
 
     // We inform the writer about what is happening, but we may not use the resulting gcode.
     std::string toolchange_command = m_writer.toolchange(extruder_id);
-    if (toolchange_gcode.empty() && m_writer.multiple_extruders)// !custom_gcode_changes_tool(toolchange_gcode_parsed, m_writer.toolchange_prefix(), extruder_id) && !no_toolchange)
+    if (toolchange_gcode.empty() && m_writer.multiple_extruders) { // !custom_gcode_changes_tool(toolchange_gcode_parsed, m_writer.toolchange_prefix(), extruder_id) && !no_toolchange)
         gcode += toolchange_command;
-    else {
+    } else {
         // user provided his own toolchange gcode, no need to do anything
+    }
+    if (m_enable_cooling_markers) {
+        gcode += ";_TOOLCHANGE " + std::to_string(extruder_id) + "\n";
     }
     return gcode;
 }

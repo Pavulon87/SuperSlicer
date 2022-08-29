@@ -135,8 +135,8 @@ std::vector<std::reference_wrapper<const PrintRegion>> PrintObject::all_regions(
         for (int i_poly = 0; i_poly < nb_polyhole; i_poly++) {
             Polygon& pts = (((i_poly % 2) == 0) ? list[i_poly / 2] : list[(nb_polyhole + 1) / 2 + i_poly / 2]);
             const float new_radius = radius / float(std::cos(PI / nb_edges));
-            for (int i_edge = 0; i_edge < nb_edges; ++i_edge) {
-                float angle = rotation * i_poly + (float(PI) * 2 * i_edge) / nb_edges;
+            for (size_t i_edge = 0; i_edge < nb_edges; ++i_edge) {
+                float angle = rotation * i_poly + (float(PI) * 2 * (float)i_edge) / nb_edges;
                 pts.points.emplace_back(center.x() + new_radius * cos(angle), center.y() + new_radius * sin(angle));
             }
             pts.make_clockwise();
@@ -206,7 +206,6 @@ std::vector<std::reference_wrapper<const PrintRegion>> PrintObject::all_regions(
 
         //search & find hole that span at least X layers
         const size_t min_nb_layers = 2;
-        float max_layer_height = config().layer_height * 2;
         for (size_t layer_idx = 0; layer_idx < this->m_layers.size(); ++layer_idx) {
             for (size_t hole_idx = 0; hole_idx < layerid2center[layer_idx].size(); ++hole_idx) {
                 //get all other same polygons
@@ -995,10 +994,10 @@ bool PrintObject::invalidate_state_by_config_options(
         } else if (step == posSlice) {
             invalidated |= this->invalidate_steps({ posPerimeters, posPrepareInfill, posInfill, posIroning, posSupportMaterial });
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
-        m_slicing_params.valid = false;
+        m_slicing_params->valid = false;
         } else if (step == posSupportMaterial) {
         invalidated |= m_print->invalidate_steps({ psSkirtBrim });
-        m_slicing_params.valid = false;
+        m_slicing_params->valid = false;
         }
 
         // Wipe tower depends on the ordering of extruders, which in turn depends on everything.
@@ -1015,7 +1014,7 @@ bool PrintObject::invalidate_state_by_config_options(
         // First call the "invalidate" functions, which may cancel background processing.
         bool result = Inherited::invalidate_all_steps() | m_print->invalidate_all_steps();
         // Then reset some of the depending values.
-        m_slicing_params.valid = false;
+        m_slicing_params->valid = false;
         return result;
     }
 
@@ -1046,7 +1045,6 @@ bool PrintObject::invalidate_state_by_config_options(
 
         ExPolygon polygon_reduced = polygon_to_check;
         size_t pos_check = 0;
-        bool has_del = false;
         while ((polygon_reduced.contour.points.begin() + pos_check) != polygon_reduced.contour.points.end()) {
             Point best_point = polygon_reduced.contour.points[pos_check].projection_onto(allowedPoints.contour);
             for (const Polygon& hole : allowedPoints.holes) {
@@ -1085,7 +1083,6 @@ bool PrintObject::invalidate_state_by_config_options(
             polygon_reduced = try_fit_to_size2(bigger_polygon[0], growing_area);
         }
         //ExPolygons to_check = offset_ex(polygon_to_cover, -offset);
-        int idx = 0;
         ExPolygons not_covered = diff_ex(polygon_to_cover, polygon_reduced, ApplySafetyOffset::Yes);
         while (!not_covered.empty()) {
             //not enough, use a bigger offset
@@ -1093,7 +1090,6 @@ bool PrintObject::invalidate_state_by_config_options(
             float next_coverage = percent_coverage + (percent_coverage - current_coverage) * 4;
             previous_offset = current_offset;
             current_offset *= 2;
-            double area = 0;
             if (next_coverage < 0.1) current_offset *= 2;
             //create the bigger polygon and test it
             ExPolygons bigger_polygon = offset_ex(polygon_to_cover, double(current_offset));
@@ -1261,7 +1257,6 @@ bool PrintObject::invalidate_state_by_config_options(
                                                 } else {
                                                     double sparse_area = surf_with_overlap.area();
                                                     double area_to_cover = 0;
-                                                    double min_area_to_cover = 0;
                                                     if (dfaAutoNotFull == algo) {
                                                         // calculate area to decide if area is small enough for autofill
                                                         for (ExPolygon poly_inter : intersect)
@@ -1316,7 +1311,7 @@ bool PrintObject::invalidate_state_by_config_options(
                                                             dense = dense_test;
                                                         }
                                                         dense_polys.insert(dense_polys.end(), dense.begin(), dense.end());
-                                                        for (int i = 0; i < dense.size(); i++)
+                                                        for (size_t i = 0; i < dense.size(); i++)
                                                             dense_priority.push_back(priority);
                                                     }
                                                     //assign (copy)
@@ -1339,7 +1334,7 @@ bool PrintObject::invalidate_state_by_config_options(
                                         if (area_sparse > area_dense * 0.1) {
                                             //split
                                             //dense_polys = union_ex(dense_polys);
-                                            for (int idx_dense = 0; idx_dense < dense_polys.size(); idx_dense++) {
+                                            for (size_t idx_dense = 0; idx_dense < dense_polys.size(); idx_dense++) {
                                                 ExPolygon dense_poly = dense_polys[idx_dense];
                                                 //remove overlap with perimeter
                                                 ExPolygons offseted_dense_polys = layerm->fill_no_overlap_expolygons.empty()
@@ -1840,20 +1835,24 @@ bool PrintObject::invalidate_state_by_config_options(
                         float        max_perimeter_infill_spacing = float(layerm.flow(frSolidInfill).scaled_spacing()) * 1.75f;
                         // Top surfaces.
                         auto& cache = cache_top_botom_regions[idx_layer];
-                        cache.top_surfaces = offset_ex(to_expolygons(layerm.slices().filter_by_type(stPosTop | stDensSolid)), min_perimeter_infill_spacing);
-                        append(cache.top_surfaces, offset_ex(to_expolygons(layerm.fill_surfaces.filter_by_type(stPosTop | stDensSolid)), min_perimeter_infill_spacing));
-                        if (nb_perimeter_layers_for_solid_fill != 0 && (idx_layer > min_layer_no_solid || layer.print_z < min_z_no_solid)) {
+                        ExPolygons raw_slice_temp = to_expolygons(layerm.slices().filter_by_type(stPosTop | stDensSolid));
+                        ExPolygons raw_fill_temp = to_expolygons(layerm.fill_surfaces.filter_by_type(stPosTop | stDensSolid));
+                        cache.top_surfaces = offset_ex(raw_slice_temp, min_perimeter_infill_spacing);
+                        append(cache.top_surfaces, offset_ex(raw_fill_temp, min_perimeter_infill_spacing));
+                        if (nb_perimeter_layers_for_solid_fill != 0) {
                             //it needs to be activated and we don't check the firs layers, where everything have to be solid.
-                            cache.top_fill_surfaces = offset_ex(to_expolygons(layerm.fill_surfaces.filter_by_type(stPosTop | stDensSolid)), max_perimeter_infill_spacing);
-                            cache.top_perimeter_surfaces = to_expolygons(layerm.slices().filter_by_type(stPosTop | stDensSolid));
+                            cache.top_fill_surfaces = offset_ex(raw_fill_temp, max_perimeter_infill_spacing);
+                            cache.top_perimeter_surfaces = raw_slice_temp;
                         }
                         // Bottom surfaces.
                         const SurfaceType surfaces_bottom[2] = { stPosBottom | stDensSolid, stPosBottom | stDensSolid | stModBridge };
-                        cache.bottom_surfaces = offset_ex(to_expolygons(layerm.slices().filter_by_types(surfaces_bottom, 2)), min_perimeter_infill_spacing);
-                        append(cache.bottom_surfaces, offset_ex(to_expolygons(layerm.fill_surfaces.filter_by_types(surfaces_bottom, 2)), min_perimeter_infill_spacing));
-                        if (nb_perimeter_layers_for_solid_fill != 0 && (idx_layer > min_layer_no_solid || layer.print_z < min_z_no_solid)) {
-                            cache.bottom_fill_surfaces = offset_ex(to_expolygons(layerm.fill_surfaces.filter_by_types(surfaces_bottom, 2)), max_perimeter_infill_spacing);
-                            cache.bottom_perimeter_surfaces = to_expolygons(layerm.slices().filter_by_types(surfaces_bottom, 2));
+                        raw_slice_temp = to_expolygons(layerm.slices().filter_by_types(surfaces_bottom, 2));
+                        raw_fill_temp = to_expolygons(layerm.fill_surfaces.filter_by_types(surfaces_bottom, 2));
+                        cache.bottom_surfaces = offset_ex(raw_slice_temp, min_perimeter_infill_spacing);
+                        append(cache.bottom_surfaces, offset_ex(raw_fill_temp, min_perimeter_infill_spacing));
+                        if (nb_perimeter_layers_for_solid_fill != 0) {
+                            cache.bottom_perimeter_surfaces = raw_slice_temp;
+                            cache.bottom_fill_surfaces = offset_ex(raw_fill_temp, max_perimeter_infill_spacing);
                         }
                         // Holes over all regions. Only collect them once, they are valid for all idx_region iterations.
                         if (cache.holes.empty()) {
@@ -1893,7 +1892,7 @@ bool PrintObject::invalidate_state_by_config_options(
                     coord_t      infill_line_spacing = solid_infill_flow.scaled_spacing();
                     // Find a union of perimeters below / above this surface to guarantee a minimum shell thickness.
                     ExPolygons shell;
-                    ExPolygons fill_shell;
+                    ExPolygons fill_shell; // for nb_perimeter_layers_for_solid_fill
                     ExPolygons max_perimeter_shell; // for nb_perimeter_layers_for_solid_fill
                     ExPolygons holes;
 #ifdef SLIC3R_DEBUG_SLICE_PROCESSING
@@ -2048,9 +2047,9 @@ bool PrintObject::invalidate_state_by_config_options(
                         shell = intersection_ex(shell, polygonsInternal, ApplySafetyOffset::Yes);
                         expolygons_append(shell, diff_ex(polygonsInternal, holes));
                         shell = union_ex(shell);
-                        ExPolygons toadd;
                         //check if a polygon is only over perimeter, in this case evict it (depends from nb_perimeter_layers_for_solid_fill value)
                         if (nb_perimeter_layers_for_solid_fill != 0 && (idx_layer > min_layer_no_solid || layer->print_z < min_z_no_solid)) {
+                            ExPolygons toadd;
                             for (int i = 0; i < shell.size(); i++) {
                                 if (nb_perimeter_layers_for_solid_fill < 2 || intersection_ex(ExPolygons{ shell[i] }, max_perimeter_shell, ApplySafetyOffset::No).empty()) {
                                     ExPolygons expoly = intersection_ex(ExPolygons{ shell[i] }, fill_shell);
@@ -2457,12 +2456,12 @@ PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &defau
 
     void PrintObject::update_slicing_parameters()
     {
-        if (!m_slicing_params.valid)
+        if (!m_slicing_params || !m_slicing_params->valid)
             m_slicing_params = SlicingParameters::create_from_config(
-            this->print()->config(), m_config, this->model_object()->bounding_box().max.z(), this->object_extruders());
+                this->print()->config(), m_config, this->model_object()->bounding_box().max.z(), this->object_extruders());
     }
 
-    SlicingParameters PrintObject::slicing_parameters(const DynamicPrintConfig& full_config, const ModelObject& model_object, float object_max_z)
+    std::shared_ptr<SlicingParameters> PrintObject::slicing_parameters(const DynamicPrintConfig& full_config, const ModelObject& model_object, float object_max_z)
     {
         PrintConfig         print_config;
         PrintObjectConfig   object_config;
@@ -2537,9 +2536,16 @@ PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &defau
             // Must not be of even length.
             ((layer_height_profile.size() & 1) != 0 ||
                 // Last entry must be at the top of the object.
-            std::abs(layer_height_profile[layer_height_profile.size() - 2] - slicing_parameters.object_print_z_max + slicing_parameters.object_print_z_min) > 1e-3))
+           std::abs(layer_height_profile[layer_height_profile.size() - 2] - slicing_parameters.object_print_z_max + slicing_parameters.object_print_z_min) > 10 * EPSILON)) {
+            if ((layer_height_profile.size() & 1) != 0) {
+                BOOST_LOG_TRIVIAL(error) << "Error: can't apply the layer hight profile: layer_height_profile array is odd, not even.";
+            } else {
+                BOOST_LOG_TRIVIAL(error) << "Error: can't apply the layer hight profile: layer_height_profile last layer is at "
+                    << layer_height_profile[layer_height_profile.size() - 2]
+                    <<", and it's too far away from object_print_z_max = "<<(slicing_parameters.object_print_z_max + slicing_parameters.object_print_z_min);
+            }
             layer_height_profile.clear();
-
+        }
         if (layer_height_profile.empty()) {
             layer_height_profile = layer_height_profile_from_ranges(slicing_parameters, model_object.layer_config_ranges);
             updated = true;

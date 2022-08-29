@@ -714,6 +714,8 @@ ExtrusionEntityCollection make_brim(const Print &print, PrintTryCancel try_cance
 //superslicer
 
 void extrude_brim_from_tree(const Print& print, std::vector<std::vector<BrimLoop>>& loops, const Polygons& frontiers, const Flow& flow, ExtrusionEntityCollection& out, bool reversed/*= false*/) {
+    if (loops.empty())
+        return;
 
     // nest contour loops (same as in perimetergenerator)
     for (int d = loops.size() - 1; d >= 1; --d) {
@@ -838,10 +840,10 @@ void extrude_brim_from_tree(const Print& print, std::vector<std::vector<BrimLoop
                     (*extrude_ptr)(child, mycoll);
                 //remove un-needed collection if possible
                 if (mycoll->entities().size() == 1) {
-                    parent->append(*mycoll->entities().front());
-                    delete mycoll;
+                    parent->append(*mycoll->entities().front()); //add clone
+                    delete mycoll; // remove coll & content
                 } else if (mycoll->entities().size() == 0) {
-                    delete mycoll;
+                    delete mycoll;// remove coll & content
                 } else {
                     parent->append(ExtrusionEntitiesPtr{ mycoll });
                 }
@@ -856,10 +858,10 @@ void extrude_brim_from_tree(const Print& print, std::vector<std::vector<BrimLoop
                 if (line.points.back() == line.points.front()) {
                     ExtrusionPath path(erSkirt, mm3_per_mm, width, height);
                     path.polyline.points = line.points;
-                    to_add.emplace_back(new ExtrusionLoop(std::move(path), elrSkirt));
+                    to_add.push_back(new ExtrusionLoop(std::move(path), elrSkirt));
                 } else {
                     ExtrusionPath* extrusion_path = new ExtrusionPath(erSkirt, mm3_per_mm, width, height);
-                    to_add.emplace_back(extrusion_path);
+                    to_add.push_back(extrusion_path);
                     extrusion_path->polyline = line;
                 }
             }
@@ -981,17 +983,30 @@ void make_brim(const Print& print, const Flow& flow, const PrintObjectPtrs& obje
     for (PrintObject* object : objects) {
         ExPolygons object_islands;
         for (ExPolygon& expoly : object->layers().front()->lslices)
-            if (brim_config.brim_inside_holes || brim_config.brim_width_interior > 0)
-                object_islands.push_back(brim_offset == 0 ? expoly : offset_ex(expoly, brim_offset)[0]);
-            else
-                object_islands.emplace_back(brim_offset == 0 ? to_expolygon(expoly.contour) : offset_ex(to_expolygon(expoly.contour), brim_offset)[0]);
-        if (!object->support_layers().empty()) {
-            Polygons polys = object->support_layers().front()->support_fills.polygons_covered_by_spacing(flow.spacing_ratio(), float(SCALED_EPSILON));
-            for (Polygon poly : polys) {
+            if (brim_config.brim_inside_holes || brim_config.brim_width_interior > 0) {
                 if (brim_offset == 0) {
-                    object_islands.emplace_back(poly);
+                    object_islands.push_back(expoly);
                 } else {
-                    append(object_islands, offset_ex(Polygons{ poly }, brim_offset));
+                    for (ExPolygon& grown_expoly : offset_ex(expoly, brim_offset)) {
+                        object_islands.push_back(std::move(grown_expoly));
+                    }
+                }
+            } else {
+                if (brim_offset == 0) {
+                    object_islands.push_back(to_expolygon(expoly.contour));
+                } else {
+                    for (ExPolygon& grown_expoly : offset_ex(to_expolygon(expoly.contour), brim_offset)) {
+                        object_islands.push_back(std::move(grown_expoly));
+                    }
+                }
+            }
+        if (!object->support_layers().empty()) {
+            ExPolygons polys = union_ex(object->support_layers().front()->support_fills.polygons_covered_by_spacing(flow.spacing_ratio(), float(SCALED_EPSILON)));
+            for (ExPolygon& poly : polys) {
+                if (brim_offset == 0) {
+                    object_islands.push_back(std::move(poly));
+                } else {
+                    append(object_islands, offset_ex(ExPolygons{ poly }, brim_offset));
                 }
             }
         }
@@ -1058,21 +1073,23 @@ void make_brim(const Print& print, const Flow& flow, const PrintObjectPtrs& obje
         bigger_islands.clear();
         if (i > 0) {
             for (ExPolygon& expoly : last_islands) {
-                for (Polygon& big_contour : offset(expoly.contour, double(scaled_spacing), jtSquare)) {
-                    bigger_islands.emplace_back();
-                    bigger_islands.back().contour = big_contour.simplify(scaled_resolution / 10)[0];
+                for (ExPolygon& big_contour : offset_ex(expoly, double(scaled_spacing), jtSquare)) {
+                    bigger_islands.push_back(big_contour);
+                    Polygons simplifiesd_big_contour = big_contour.contour.simplify(scaled_resolution / 10);
+                    if (simplifiesd_big_contour.size() == 1) {
+                        bigger_islands.back().contour = simplifiesd_big_contour.front();
+                    }
                 }
             }
         } else bigger_islands = islands;
         last_islands = union_ex(bigger_islands);
         for (ExPolygon& expoly : last_islands) {
-            loops[i].emplace_back(expoly.contour);
-            // buggy
-            ////also add hole, in case of it's merged with a contour. <= HOW? if there's an island inside a hole! (in the same object)
-            //for (Polygon &hole : expoly.holes)
-            //    //but remove the points that are inside the holes of islands
-            //    for (Polyline& pl : diff_pl(Polygons{ hole }, unbrimmable_polygons, true))
-            //        loops[i].emplace_back(pl);
+            loops.back().emplace_back(expoly.contour);
+            // also add hole, in case of it's merged with a contour. see supermerill/SuperSlicer/issues/3050
+            for (Polygon &hole : expoly.holes)
+                //but remove the points that are inside the holes of islands
+                for (ExPolygon& pl : diff_ex(Polygons{ hole }, unbrimmable_polygons))
+                    loops[i].emplace_back(pl.contour);
         }
     }
 
@@ -1105,18 +1122,36 @@ void make_brim_ears(const Print& print, const Flow& flow, const PrintObjectPtrs&
     for (PrintObject* object : objects) {
         ExPolygons object_islands;
         ExPolygons support_island;
-        for (const ExPolygon& expoly : object->layers().front()->lslices)
-            if (brim_config.brim_inside_holes || brim_config.brim_width_interior > 0)
-                object_islands.push_back(brim_offset == 0 ? expoly : offset_ex(expoly, brim_offset)[0]);
-            else
-                object_islands.emplace_back(brim_offset == 0 ? to_expolygon(expoly.contour) : offset_ex(to_expolygon(expoly.contour), brim_offset)[0]);
+        for (const ExPolygon& expoly : object->layers().front()->lslices) {
+            if (brim_config.brim_inside_holes || brim_config.brim_width_interior > 0){
+                if (brim_offset == 0) {
+                    object_islands.push_back(expoly);
+                } else {
+                    for (ExPolygon& grown_expoly : offset_ex(expoly, brim_offset)) {
+                        object_islands.push_back(std::move(grown_expoly));
+                    }
+                }
+            } else {
+                if (brim_offset == 0) {
+                    object_islands.push_back(to_expolygon(expoly.contour));
+                } else {
+                    for (const ExPolygon& grown_expoly : offset_ex(to_expolygon(expoly.contour), brim_offset)) {
+                        object_islands.push_back(std::move(grown_expoly));
+                    }
+                }
+            }
+        }
 
         if (!object->support_layers().empty()) {
-            Polygons polys = object->support_layers().front()->support_fills.polygons_covered_by_spacing(flow.spacing_ratio(), float(SCALED_EPSILON));
+            ExPolygons polys = union_ex(object->support_layers().front()->support_fills.polygons_covered_by_spacing(flow.spacing_ratio(), float(SCALED_EPSILON)));
             //put ears over supports unless it's more than 30% fill
             if (object->config().raft_first_layer_density.get_abs_value(1.) > 0.3) {
-                for (Polygon poly : polys) {
-                    object_islands.push_back(brim_offset == 0 ? ExPolygon{ poly } : offset_ex(Polygons{ poly }, brim_offset)[0]);
+                for (ExPolygon& poly : polys) {
+                    if (brim_offset == 0) {
+                        object_islands.push_back(std::move(poly));
+                    } else {
+                        append(object_islands, offset_ex(ExPolygons{ poly }, brim_offset));
+                    }
                 }
             } else {
                 // offset2+- to avoid bits of brim inside the raft
@@ -1278,15 +1313,26 @@ void make_brim_interior(const Print& print, const Flow& flow, const PrintObjectP
     coordf_t spacing;
     for (PrintObject* object : objects) {
         ExPolygons object_islands;
-        for (const ExPolygon& expoly : object->layers().front()->lslices)
-            object_islands.push_back(brim_offset == 0 ? expoly : offset_ex(ExPolygons{ expoly }, brim_offset)[0]);
+        for (const ExPolygon& expoly : object->layers().front()->lslices){
+            if (brim_offset == 0) {
+                object_islands.push_back(expoly);
+            } else {
+                for (const ExPolygon& grown_expoly : offset_ex(ExPolygons{ expoly }, brim_offset)) {
+                    object_islands.push_back(std::move(grown_expoly));
+                }
+            }
+        }
         if (!object->support_layers().empty()) {
             spacing = scaled(object->config().support_material_interface_spacing.value) + support_material_flow(object, float(print.get_first_layer_height())).scaled_width() * 1.5;
-            Polygons polys = closing(
-                object->support_layers().front()->support_fills.polygons_covered_by_spacing(flow.spacing_ratio(), float(SCALED_EPSILON))
+            ExPolygons polys = closing_ex(
+                union_ex(object->support_layers().front()->support_fills.polygons_covered_by_spacing(flow.spacing_ratio(), float(SCALED_EPSILON)))
                 , spacing);
-            for (Polygon poly : polys) {
-                object_islands.push_back(brim_offset == 0 ? ExPolygon{ poly } : offset_ex(Polygons{ poly }, brim_offset)[0]);
+            for (ExPolygon& poly : polys) {
+                if (brim_offset == 0) {
+                    object_islands.push_back(std::move(poly));
+                } else {
+                    append(object_islands, offset_ex(ExPolygons{ poly }, brim_offset));
+                }
             }
         }
         islands.reserve(islands.size() + object_islands.size() * object->instances().size());

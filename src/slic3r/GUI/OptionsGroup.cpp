@@ -594,7 +594,12 @@ void OptionsGroup::update_script_presets() {
         if (key_opt.second.opt.is_script) {
             Field* field = get_field(key_opt.first);
             if (field) {
-                this->set_value(key_opt.first, key_opt.second.script->call_script_function_get_value(key_opt.second.opt));
+                boost::any val = key_opt.second.script->call_script_function_get_value(key_opt.second.opt);
+                if (val.empty()) {
+                    MessageDialog(nullptr, "Error, can't find the script to get the value for the widget '" + key_opt.first + "'", _L("Error"), wxOK | wxICON_ERROR).ShowModal();
+                } else {
+                    this->set_value(key_opt.first, val);
+                }
             } //if not, it will set at ConfigOptionsGroup::reload_config()
         }
     }
@@ -679,30 +684,36 @@ void ConfigOptionsGroup::back_to_config_value(const DynamicPrintConfig& config, 
 		auto   *milling_diameter = dynamic_cast<const ConfigOptionFloats*>(config.option("milling_diameter"));
 		value = int(milling_diameter->values.size());
 	} else if (it_opt != m_options.end() && it_opt->second.opt.is_script) {
-        //when a scripted key is reset, reset its deps
-        //reset if needed in other tabs
-        for (const std::string& dep_key : it_opt->second.opt.depends_on) {
-            for (Tab* tab : wxGetApp().tabs_list) {
-                if (tab != nullptr && tab->completed()) {
-                    const DynamicPrintConfig& initial_conf = tab->m_presets->get_selected_preset().config;
-                    DynamicPrintConfig& edited_conf = tab->m_presets->get_edited_preset().config;
-                    if (initial_conf.has(dep_key) && edited_conf.has(dep_key)) {
-                        ConfigOption* conf_opt = initial_conf.option(dep_key)->clone();
-                        //set the conf
-                        edited_conf.set_key_value(dep_key, conf_opt);
+        // when a scripted key is reset, reset its deps
+        // call the reset function if it exits
+        if (!it_opt->second.script->call_script_function_reset(it_opt->second.opt)) {
+            // Fucntion doesn't exists, reset the fields from the 'depends'
+            // reset in all tabs
+            // first set_key_value
+            for (const std::string& dep_key : it_opt->second.opt.depends_on) {
+                for (Tab* tab : wxGetApp().tabs_list) {
+                    if (tab != nullptr && tab->completed()) {
+                        const DynamicPrintConfig& initial_conf = tab->m_presets->get_selected_preset().config;
+                        DynamicPrintConfig& edited_conf = tab->m_presets->get_edited_preset().config;
+                        if (initial_conf.has(dep_key) && edited_conf.has(dep_key)) {
+                            ConfigOption* conf_opt = initial_conf.option(dep_key)->clone();
+                            //set the conf
+                            edited_conf.set_key_value(dep_key, conf_opt);
+                        }
                     }
                 }
             }
-        }
-        for (const std::string& dep_key : it_opt->second.opt.depends_on) {
-            for (Tab* tab : wxGetApp().tabs_list) {
-                if (tab != nullptr && tab->completed()) {
-                    const DynamicPrintConfig& initial_conf = tab->m_presets->get_selected_preset().config;
-                    DynamicPrintConfig& edited_conf = tab->m_presets->get_edited_preset().config;
-                    if (initial_conf.has(dep_key) && edited_conf.has(dep_key)) {
-                        ConfigOption* conf_opt = initial_conf.option(dep_key)->clone();
-                        // update the field
-                        tab->on_value_change(dep_key, conf_opt->getAny());
+            // now that all keys are set, call the on_value_change to propagate the changes in one go.
+            for (const std::string& dep_key : it_opt->second.opt.depends_on) {
+                for (Tab* tab : wxGetApp().tabs_list) {
+                    if (tab != nullptr && tab->completed()) {
+                        const DynamicPrintConfig& initial_conf = tab->m_presets->get_selected_preset().config;
+                        DynamicPrintConfig& edited_conf = tab->m_presets->get_edited_preset().config;
+                        if (initial_conf.has(dep_key) && edited_conf.has(dep_key)) {
+                            ConfigOption* conf_opt = initial_conf.option(dep_key)->clone();
+                            // update the field
+                            tab->on_value_change(dep_key, conf_opt->getAny());
+                        }
                     }
                 }
             }

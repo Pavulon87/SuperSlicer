@@ -17,6 +17,7 @@ namespace Slic3r {
 
 extern void set_logging_level(unsigned int level);
 extern unsigned get_logging_level();
+extern void trace(unsigned int level, const std::string& message);
 extern void trace(unsigned int level, const char *message);
 // Format memory allocated, separate thousands by comma.
 extern std::string format_memsize_MB(size_t n);
@@ -93,7 +94,8 @@ enum CopyFileResult {
 	FAIL_CHECK_TARGET_NOT_OPENED
 };
 // Copy a file, adjust the access attributes, so that the target is writable.
-CopyFileResult copy_file_inner(const std::string &from, const std::string &to, std::string& error_message);
+CopyFileResult copy_file_inner(const std::string& from, const std::string& to, std::string& error_message);
+CopyFileResult copy_file_inner(const boost::filesystem::path& from, const boost::filesystem::path& to, std::string& error_message);
 // Copy file to a temp file first, then rename it to the final file name.
 // If with_check is true, then the content of the copied file is compared to the content
 // of the source file before renaming.

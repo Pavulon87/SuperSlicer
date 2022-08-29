@@ -15,6 +15,7 @@ namespace Slic3r
 class WipeTowerWriter;
 class PrintConfig;
 class PrintObjectConfig;
+class PrintRegionConfig;
 enum GCodeFlavor : unsigned char;
 
 
@@ -126,7 +127,7 @@ public:
 	// y			-- y coordinates of wipe tower in mm ( left bottom corner )
 	// width		-- width of wipe tower in mm ( default 60 mm - leave as it is )
 	// wipe_area	-- space available for one toolchange in mm
-    WipeTower(const PrintConfig& config, const PrintObjectConfig& object_config, const std::vector<std::vector<float>>& wiping_matrix, size_t initial_tool);
+    WipeTower(const PrintConfig& config, const PrintObjectConfig& default_object_config, const PrintRegionConfig& default_region_config, const std::vector<std::vector<float>>& wiping_matrix, size_t initial_tool);
 
 	// Set the extruder properties.
     void set_extruder(size_t idx);
@@ -263,11 +264,11 @@ private:
 
 	const PrintConfig* m_config;
 	const PrintObjectConfig* m_object_config;
+	const PrintRegionConfig* m_region_config;
 	bool   m_semm               = true; // Are we using a single extruder multimaterial printer?
     Vec2f  m_wipe_tower_pos; 			// Left front corner of the wipe tower in mm.
 	float  m_wipe_tower_width; 			// Width of the wipe tower.
 	float  m_wipe_tower_depth 	= 0.f; 	// Depth of the wipe tower
-    float  m_wipe_tower_brim_width      = 0.f; 	// Width of brim (mm) from config
     float  m_wipe_tower_brim_width_real = 0.f; 	// Width of brim (mm) after generation
 	float  m_wipe_tower_rotation_angle = 0.f; // Wipe tower rotation angle in degrees (with respect to x axis)
     float  m_internal_rotation  = 0.f;

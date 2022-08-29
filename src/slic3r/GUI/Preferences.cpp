@@ -307,6 +307,13 @@ void PreferencesDialog::build(size_t selected_tab)
         option = Option(def, "date_in_config_file");
         m_optgroups_general.back()->append_single_option_line(option);
 
+        def.label = L("Show a Pop-up with the current material when exporting");
+        def.type = coBool;
+        def.tooltip = L("If you constantly forgot to select the right filament/materail, check this option to have a really obtrusive reminder on each export.");
+        def.set_default_value(new ConfigOptionBool{ app_config->has("check_material_export") ? app_config->get("check_material_export") == "1" : false });
+        option = Option(def, "check_material_export");
+        m_optgroups_general.back()->append_single_option_line(option);
+
         activate_options_tab(m_optgroups_general.back(), 3);
         m_optgroups_general.emplace_back(create_options_group(_L("Dialogs"), tabs, 0));
 
@@ -419,7 +426,9 @@ void PreferencesDialog::build(size_t selected_tab)
 
 		def.label = L("FreeCAD path");
 		def.type = coString;
-		def.tooltip = L("If it point to a valid freecad instance (the bin directory or the python executable), you can use the built-in python script to quickly generate geometry.");
+		def.tooltip = L("If it point to a valid freecad instance, you can use the built-in python script to quickly generate geometry."
+            "\nPut here the freecad directory from which you can access its 'lib' directory."
+            "\nFreecad will use its own python (from the bin directoyr) on windows and will use the system python3 on linux & macos");
 		def.set_default_value(new ConfigOptionString{ app_config->get("freecad_path") });
 		option = Option(def, "freecad_path");
 		//option.opt.full_width = true;
