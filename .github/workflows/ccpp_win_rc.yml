@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - rc
+      - rc-pav
 
 jobs:
 
