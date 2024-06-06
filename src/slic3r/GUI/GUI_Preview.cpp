@@ -565,10 +565,12 @@ void Preview::on_combochecklist_options(wxCommandEvent& evt)
     m_canvas->set_gcode_options_visibility_from_flags(new_flags);
     if (m_canvas->get_gcode_view_type() == GCodeViewer::EViewType::Feedrate) {
         const unsigned int diff_flags = curr_flags ^ new_flags;
-        if ((diff_flags & (1 << static_cast<unsigned int>(Preview::OptionType::Travel))) != 0)
+        if ((diff_flags & (1 << static_cast<unsigned int>(Preview::OptionType::Travel))) != 0) {
+            m_force_gcode_color_recompute = true;
             refresh_print();
-        else
+        } else {
             m_canvas->refresh_gcode_preview_render_paths();
+        }
     }
     else
         m_canvas->refresh_gcode_preview_render_paths();
@@ -684,7 +686,7 @@ void Preview::check_layers_slider_values(std::vector<CustomGCode::Item>& ticks_f
         m_schedule_background_process();
 }
 
-void Preview::update_layers_slider(const std::vector<double>& layers_z, bool keep_z_range)
+void Preview::update_layers_slider(const std::vector<double>& layers_z, bool show_gcode_data, bool keep_z_range)
 {
   //lock rendering while updating
   {
@@ -706,7 +708,7 @@ void Preview::update_layers_slider(const std::vector<double>& layers_z, bool kee
 
     // Detect and set manipulation mode for double slider
     update_layers_slider_mode();
-
+    
     Plater* plater = wxGetApp().plater();
     CustomGCode::Info ticks_info_from_model = plater->model().custom_gcode_per_print_z;
     if (wxGetApp().is_editor())
@@ -740,46 +742,36 @@ void Preview::update_layers_slider(const std::vector<double>& layers_z, bool kee
     }
     m_layers_slider->SetSelectionSpan(idx_low, idx_high);
     m_layers_slider->SetTicksValues(ticks_info_from_model);
-
-    bool sla_print_technology = plater->printer_technology() == ptSLA;
+    
     bool sequential_print = wxGetApp().preset_bundle->fff_prints.get_edited_preset().config.opt_bool("complete_objects");
+    bool sla_print_technology = plater->printer_technology() == ptSLA;
     m_layers_slider->SetDrawMode(sla_print_technology, sequential_print);
-    if (sla_print_technology)
-        m_layers_slider->SetLayersTimes(plater->sla_print().print_statistics().layers_times);
-    else {
-        if (plater->fff_print().print_statistics().is_computing_gcode || !plater->fff_print().finished()) {
-            //do not fetch uncomplete data
-            m_layers_slider->SetLayersTimes({}, 0);
+    if (show_gcode_data) {
+        if (sla_print_technology) {
+            m_layers_slider->SetLayersTimes(plater->sla_print().print_statistics().layers_times);
         } else {
-            auto print_mode_stat = m_gcode_result->print_statistics.modes.front();
-            m_layers_slider->SetLayersTimes(print_mode_stat.layers_times, print_mode_stat.time);
+            if (plater->fff_print().print_statistics().is_computing_gcode || !plater->fff_print().finished()) {
+                // do not fetch uncomplete data
+                m_layers_slider->SetLayersTimes({}, 0);
+            } else {
+                auto print_mode_stat = m_gcode_result->print_statistics.modes.front();
+                m_layers_slider->SetLayersTimes(print_mode_stat.layers_times, print_mode_stat.time);
+            }
         }
-    }
         // create area array
-        //area not computed for sla_print_technology //TODO
-    if (!sla_print_technology){
-        if (plater->fff_print().print_statistics().is_computing_gcode || !plater->fff_print().finished()) {
-            //do not fetch uncomplete data
-            m_layers_slider->SetLayersAreas({});
-        } else {
-            const std::vector<std::pair<coordf_t, float>> &layerz_to_area = plater->fff_print().print_statistics().layer_area_stats;
-            std::vector<float> areas;
-            for(auto [z, area] : layerz_to_area)
-                areas.push_back(area);
-            m_layers_slider->SetLayersAreas(areas);
-            assert(areas.size() == m_gcode_result->print_statistics.modes.front().layers_times.size());
-            //auto objects = plater->fff_print().objects();
-            //for (auto object : objects) {
-            //    for (auto layer : object->layers()) {
-            //        assert(layer->print_z > 100);
-            //        coord_t layer_z = 100*(coord_t(layer->print_z + 50)/100);
-            //        int32_t area = layerz_to_area[layer_z];
-            //        for (auto poly : layer->lslices) {
-            //            area += poly.area();
-            //        }
-            //        layerz_to_area[layer_z] = area;
-            //    }
-            //}
+        // area not computed for sla_print_technology //TODO
+        if (!sla_print_technology) {
+            if (plater->fff_print().print_statistics().is_computing_gcode || !plater->fff_print().finished()) {
+                // do not fetch uncomplete data
+                m_layers_slider->SetLayersAreas({});
+            } else {
+                const std::vector<std::pair<coordf_t, float>> &layerz_to_area =
+                    plater->fff_print().print_statistics().layer_area_stats;
+                std::vector<float> areas;
+                for (auto [z, area] : layerz_to_area) areas.push_back(area);
+                m_layers_slider->SetLayersAreas(areas);
+                assert(areas.size() == m_gcode_result->print_statistics.modes.front().layers_times.size());
+            }
         }
     }
 
@@ -951,13 +943,16 @@ void Preview::update_moves_slider()
             alternate_values[count] = static_cast<double>(view.gcode_ids[i]);
         ++count;
     }
-
+    // should the end of the horizontal slider stay at the end?
+    bool max_is_max = m_moves_slider->GetMaxValue() == m_moves_slider->GetHigherValue();
+    // update values
     m_moves_slider->SetSliderValues(values);
     m_moves_slider->SetSliderAlternateValues(alternate_values);
     m_moves_slider->SetMaxValue(view.endpoints.last - view.endpoints.first);
-    m_moves_slider->SetSelectionSpan(view.current.first - view.endpoints.first, view.current.last - view.endpoints.first);
-    m_moves_slider->Refresh();
-    m_moves_slider->Update();
+    m_moves_slider->SetSelectionSpan(view.current.first - view.endpoints.first,
+                                     max_is_max ? m_moves_slider->GetMaxValue() :
+                                                  (view.current.last - view.endpoints.first));
+    m_moves_slider->fire_update_if_needed();
 }
 
 void Preview::enable_moves_slider(bool enable)
@@ -1061,16 +1056,19 @@ void Preview::load_print_as_fff(bool keep_z_range)
             m_canvas->set_items_show(true, true);
 
         m_canvas->set_selected_extruder(0);
+        bool gcode_not_extrusions = false;
         if (current_force_state == ForceState::ForceGcode || (gcode_preview_data_valid && current_force_state != ForceState::ForceExtrusions)) {
             // Load the real G-code preview.
             if (current_force_state == ForceState::NoForce)
                 m_canvas->set_items_show(false, true);
-            m_canvas->load_gcode_preview(*m_gcode_result, colors);
+            m_canvas->load_gcode_preview(*m_gcode_result, colors, m_force_gcode_color_recompute);
+            m_force_gcode_color_recompute = false;
             m_left_sizer->Show(m_bottom_toolbar_panel);
             m_left_sizer->Layout();
             Refresh();
             zs = m_canvas->get_gcode_layers_zs();
             m_loaded = true;
+            gcode_not_extrusions = true;
         }
         else if (wxGetApp().is_editor()) {
             // Load the initial preview based on slices, not the final G-code.
@@ -1081,6 +1079,7 @@ void Preview::load_print_as_fff(bool keep_z_range)
             m_left_sizer->Layout();
             Refresh();
             zs = m_canvas->get_volumes_print_zs(true);
+            gcode_not_extrusions = false;
         }
 
         if (!zs.empty() && !m_keep_current_preview_type) {
@@ -1110,7 +1109,7 @@ void Preview::load_print_as_fff(bool keep_z_range)
             hide_layers_slider();
             m_canvas_widget->Refresh();
         } else {
-            update_layers_slider(zs, keep_z_range);
+            update_layers_slider(zs, gcode_not_extrusions, keep_z_range);
         }
     }
 }
@@ -1157,7 +1156,7 @@ void Preview::load_print_as_sla()
         Refresh();
 
         if (n_layers > 0)
-            update_layers_slider(zs);
+            update_layers_slider(zs, true);
 
         m_loaded = true;
     }
