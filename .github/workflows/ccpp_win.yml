@@ -3,6 +3,7 @@ name: C/C++ Nightly windows x64
 on:
   push:
     branches:
+      - nightly_dev-pav
       - Nigthly
       - nightly_dev
       - nightly_2.7.62

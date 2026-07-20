@@ -501,6 +501,7 @@ std::string Preset::label() const
 
 bool is_compatible_with_print(const PresetWithVendorProfile &preset, const PresetWithVendorProfile &active_print, const PresetWithVendorProfile &active_printer)
 {
+    return true;
     // templates_profile vendor profiles should be decided as same vendor profiles
 	if (preset.vendor != nullptr && preset.vendor != active_printer.vendor && !preset.vendor->templates_profile)
 		// The current profile has a vendor assigned and it is different from the active print's vendor.
@@ -524,6 +525,7 @@ bool is_compatible_with_print(const PresetWithVendorProfile &preset, const Prese
 
 bool is_compatible_with_printer(const PresetWithVendorProfile &preset, const PresetWithVendorProfile &active_printer, const DynamicPrintConfig *extra_config)
 {
+    return true;
     // templates_profile vendor profiles should be decided as same vendor profiles
 	if (preset.vendor != nullptr && preset.vendor != active_printer.vendor && !preset.vendor->templates_profile)
 		// The current profile has a vendor assigned and it is different from the active print's vendor.
@@ -547,6 +549,7 @@ bool is_compatible_with_printer(const PresetWithVendorProfile &preset, const Pre
 
 bool is_compatible_with_printer(const PresetWithVendorProfile &preset, const PresetWithVendorProfile &active_printer)
 {
+    return true;
     DynamicPrintConfig config;
     config.set_key_value("printer_preset", new ConfigOptionString(active_printer.preset.name));
     const ConfigOption *opt = active_printer.preset.config.option("nozzle_diameter");
